@@ -1,0 +1,83 @@
+#!/bin/sh -- # Really perl
+#eval 'PATH=".:${ISOFAXHOME}:${PATH}" ; export PATH ; exec perl $0 ${1+"$@"}'
+eval 'exec perl $0 ${1+"$@"}'
+if 0;
+
+#
+#	splitpdf
+#	version 1.0
+#	Copyright Trabazon Ltd. WN5 7XA, UK
+#
+#	This script may be freely used with IsoFax from Bristol Group Ltd.
+#
+#
+#	5 February 2002
+#
+#New
+#
+#
+#ToDo
+#	
+#
+
+require mypdfapi;
+
+
+$controlfile=$ARGV[0];
+open(ConfFile,"$controlfile")|| die "$me: ERROR Can't open $controlfile\n";
+
+
+while(<ConfFile>)
+  {
+  if (/^\#/) {next;}
+  s/[\n\r]+//;
+  s/^\s*//;                    #remove leading whitespace
+  s/\s*$//;                    #remove trailing whitespace
+  @command=split(/,/);
+  $verb=shift @command;
+  if($verb eq "source")
+    {
+    $source= shift @command;
+    print("opening source $source\n");
+    $sourcepdf=mypdfapi->open($source);
+    print("openned\n");
+    }
+  elsif($verb eq "overlay")
+    {
+    $overlaypdf=mypdfapi->open(shift @command);
+    }
+  elsif($verb eq "destination")
+    {
+    $destination= shift @command;
+    print "creating split pdf file $destination\n";
+    $pdf=mypdfapi->new;
+    $pdf->mediabox($sourcepdf->mediabox);
+    $k=1;
+    foreach $i (@command)
+      {
+      ($startpage,$endpage)=split(/-/,$i);
+      print "  adding pages $startpage-$endpage\n";
+      for($j=$startpage;$j<=$endpage;$j++)
+        {
+        print "    page $j in position $k\n";
+        if(defined $overlaypdf)
+          {
+          $overlaypage=1;
+          if($overlaypdf->pages>1 & $k>1)
+            {$overlaypage=2;}
+          $page=$pdf->importpage($overlaypdf,$overlaypage,$k);
+          $pdf->mergepage($sourcepdf,$j,$page);
+          }
+        else
+          {
+          $page=importpage($sourcepdf,$j,$k);
+          }
+        $k++;
+        }
+      }
+    print "saving file $destination\n";
+    $pdf->saveas($destination);
+    undef $overlaypdf;
+    }
+  }
+close(ConfFile);

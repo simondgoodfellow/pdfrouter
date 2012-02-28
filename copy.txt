@@ -1,0 +1,10 @@
+Your fax has not be sent, as no fax number could be found.
+
+Please find attached a copy of the fax generated, for your review.
+The fax maybe viewed using IsoFax's FaxReader application. You
+should be able to start the application automatically from your
+mail application as long as FaxReader is associted with *.fax file type
+
+You may attach the fax image or your original documents when
+resubmitting your fax.
+

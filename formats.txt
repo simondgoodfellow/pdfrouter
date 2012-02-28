@@ -1,0 +1,17 @@
+  SUPPORTED FORMATS
+
+Standard Formats
+================
+Plain Text
+PostScript
+PDF
+
+Image Formats
+=============
+TIFF format, usually files with a suffix '.tif'
+GIF format, usually files with a suffix '.gif'
+BMP format, usually files with a suffix '.bmp'
+PCX format, usually files with a suffix '.pcx'
+
+Image format files will be scaled to fit on a single page, preserving the
+aspect ratio.
