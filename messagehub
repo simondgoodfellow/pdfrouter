@@ -4,7 +4,7 @@ if 0;
 
 #
 #	messagehub
-#	version 1.7.4
+#	version 1.7.5
 #	Copyright Trabazon Ltd. WN5 7XA, UK
 #
 #
@@ -591,6 +591,7 @@ sub processpdf
   close myLOG;
   $livefile = $file;
   $livefile =~ s/out$/done/;
+  $livefile =~ s/pdf$/done/;
   rename("$dir/$file", "$dir/$livefile");
   if($trace == 0)
     {
