@@ -1,0 +1,25 @@
+The mandatory fields for the preface sheet would be
+{{]DocumentType=Remittance}}  # possible values Remittance or PO, allows
+extensiblity to other documents in the future
+DocumentType will set defaults for DeliveryInformation printer name, Email,
+TimeToSend
+{{]Disposition=Fax}} # possible values Fax, Email, Print
+{{]DeliveryInformation=01257510606}} # Fax Number, Email Address, Printer
+Name
+
+Strongly Recommended
+{{]TrackingID=XXXXXX}} #Unique reference for the document PO number,
+Remittance No.
+
+Recommended
+{{]RecipientCompany=Acme Ltd.}} #Recipient Company
+{{]RecipientName=Donald Smith}} #for logs
+
+Supportable if required
+{{]SenderName=G Donaldson}} #for logs
+{{]SenderDepartment=Arable}} #for logs
+{{]Email=G_Donaldson@agric.scotland.gov.uk}} # send problem reports to this
+email instead of the default
+{{]Copy=Yes}} #Email a copy of the fax to the address above
+{{]TimeToSend=Now}} #Now, Least, YYYY.MM.DD.HH.MM eg 2001.12.31.23.59 or
+HH.MM

@@ -4,13 +4,16 @@ if 0;
 
 #
 #	messagehub
-#	version 1.7.5
+#	version 1.7.7
 #	Copyright Trabazon Ltd. WN5 7XA, UK
 #
 #
-#	13 March 2012
+#	27 April 2012
 #
 #New
+#   1.7.7 added check of # documents found in input file
+#   1.7.7 option for pdftk to burst or not to burst
+#   1.7.6 IsoFax process return code 1 set to fatal
 #   1.7.5 correct opendir
 #	1.7.4 zero out filelist before processing
 #   1.7.3 change trace reporting of files to be processed
@@ -129,7 +132,7 @@ $props{"test"}="no";
 	'Switch -n used without -b',
 	'Number of recipients does not match parameter to -n switch',
 	'Switch -b used without -n');
-@IsoReturnDo=('Go','Retry','Fatal','Retry','Retry',
+@IsoReturnDo=('Go','Fatal','Fatal','Retry','Retry',
 		'Fatal','Retry','Fatal','Fatal','Fatal',
 		'Retry','Fatal','Fatal','Fatal','Fatal',
 		'Retry','Fatal','Retry','Retry','Retry',
@@ -209,6 +212,8 @@ $splitpdf = "$home/splitpdf";
 $pdftops = "$home/pdftops";
 $pdftotext = "$home/pdftotext";
 $pdftk = "$home/pdftk";
+# for clippdf, to burst file or not
+$burstfile = 0;
 
 open(LOG,">$TraceFile")|| die "$me: ERROR Can't open LOG $Log\n";
 select(LOG);
@@ -532,61 +537,99 @@ sub processpdf
         $startpage=$i+1; #page after this preface page
         }
       }
-   #burst the file into individual pages
-   $burstdir="$props{'spool'}/tmp/$$#$file.burst";
-   mkdir($burstdir,0777);
-   @mypdftk=($pdftk,"$dir/$file","burst","output","$burstdir/pg%07d");
-    ($return, $output)=&execlist(@mypdftk);
-    &execreport("  pdftk", join(" ",@mypdftk),$return,$output);
-    if($return >0) {$error=$error . " pdftk failed - please see log file"; return;} 
+   if($docno>0.5)
+     {
+     #burst the file into individual pages
+     if($burstfile)
+     	{
+     	$burstdir="$props{'spool'}/tmp/$$#$file.burst";
+      mkdir($burstdir,0777);
+      @mypdftk=($pdftk,"$dir/$file","burst","output","$burstdir/pg%07d");
+      ($return, $output)=&execlist(@mypdftk);
+      &execreport("  pdftk", join(" ",@mypdftk),$return,$output);
+      if($return >0) {$error=$error . " pdftk failed - please see log file"; return;}
+      }
 #process print jobs first so that what is left is individual jobs
-   foreach $job (keys(%printjob))
-    {
-    #job name is file#documenttype#printer
-    ($myfile,$mydocument,$myprinter)=split('#',$job);
-    @mypdftk=($pdftk);
-    if($myprinter =~ /noprint/)
+     foreach $job (keys(%printjob))
       {
-      print "ignoring $job destined for noprint\n";
+      #job name is file#documenttype#printer
+      ($myfile,$mydocument,$myprinter)=split('#',$job);
+      if($burstfile)
+        {
+        @mypdftk=($pdftk);
+        }
+      else
+        {
+        @mypdftk=($pdftk, "$dir/$file", "cat");
+        }
+      if($myprinter =~ /noprint/)
+        {
+        print "ignoring $job destined for noprint\n";
+        foreach $doc (@{$printjob{$job}})
+          {#delete reference to documents destined for noprint
+          delete $firstpage{$doc};
+          }
+        next;
+        }
+      print "processing $job destined for $myprinter\n"; 
       foreach $doc (@{$printjob{$job}})
-        {#delete reference to documents destined for noprint
+        {
+        if($burstfile)
+          {
+          for($i=$firstpage{$doc}; $i<=$lastpage{$doc}; $i++)
+            {push @mypdftk, sprintf "$burstdir/pg%07d", $i;}
+          }
+        else
+          {
+          push @mypdftk, "$firstpage{$doc}-$lastpage{$doc}";
+          }
+        #delete the documents dealt with
         delete $firstpage{$doc};
         }
-      next;
+      if($burstfile)
+        {
+        push @mypdftk, "cat", "output", "$props{'pending'}/$job.pdf";
+        }
+      else
+        {
+        push @mypdftk, "output", "$props{'pending'}/$job.pdf";
+        }
+      ($return, $output)=&execlist(@mypdftk);
+      &execreport("  pdftk", join(" ",@mypdftk),$return,$output);
+      if($return >0) {$error=$error . " pdftk failed - please see log file"; return;} 
+      open(AGN,">$props{'pending'}/$job$suffix");
+      $myinifile="Disposition=Print\n"
+                        . "DeliveryInformation=$myprinter\n"
+                        . "Attachment1=$job.pdf\n"
+                        . "TrackingID=$file\n\n";
+      print(AGN $myinifile);
+      close(AGN);
       }
-    print "processing $job destined for $myprinter\n"; 
-    foreach $doc (@{$printjob{$job}})
-      {
-      for($i=$firstpage{$doc}; $i<=$lastpage{$doc}; $i++)
-        {push @mypdftk, sprintf "$burstdir/pg%07d", $i;}
-      #delete the documents dealt with
-      delete $firstpage{$doc};
+    foreach $doc (sort {$firstpage{$a}<=> $firstpage{$b}} keys(%firstpage))
+      {#all remaining documents
+      if($burstfile)
+        {
+        @mypdftk=($pdftk);
+        for($i=$firstpage{$doc}; $i<=$lastpage{$doc}; $i++)
+          {push @mypdftk, sprintf "$burstdir/pg%07d", $i;}
+        push @mypdftk, "cat", "output","$props{'pending'}/$doc.pdf";
+        }
+      else
+        {
+        @mypdftk=($pdftk, "$dir/$file", "cat", "$firstpage{$doc}-$lastpage{$doc}", "output", "$props{'pending'}/$doc.pdf");
+        }
+      ($return, $output)=&execlist(@mypdftk);
+      &execreport("  pdftk", join(" ",@mypdftk),$return,$output);
+      if($return >0) {$error=$error . " pdftk failed - please see log file"; return;} 
+       #process control file from inifile
+      open(AGN,">$props{'pending'}/$doc$suffix");
+      print(AGN $inifile{$doc});
+      close(AGN);
       }
-    push @mypdftk, "cat", "output", "$props{'pending'}/$job.pdf";
-    ($return, $output)=&execlist(@mypdftk);
-    &execreport("  pdftk", join(" ",@mypdftk),$return,$output);
-    if($return >0) {$error=$error . " pdftk failed - please see log file"; return;} 
-    open(AGN,">$props{'pending'}/$job$suffix");
-    $myinifile="Disposition=Print\n"
-                      . "DeliveryInformation=$myprinter\n"
-                      . "Attachment1=$job.pdf\n"
-                      . "TrackingID=$file\n\n";
-    print(AGN $myinifile);
-    close(AGN);
     }
-  foreach $doc (sort {$firstpage{$a}<=> $firstpage{$b}} keys(%firstpage))
-    {#all remaining documents
-     @mypdftk=($pdftk);
-    for($i=$firstpage{$doc}; $i<=$lastpage{$doc}; $i++)
-        {push @mypdftk, sprintf "$burstdir/pg%07d", $i;}
-    push @mypdftk,"cat", "output","$props{'pending'}/$doc.pdf";
-    ($return, $output)=&execlist(@mypdftk);
-    &execreport("  pdftk", join(" ",@mypdftk),$return,$output);
-    if($return >0) {$error=$error . " pdftk failed - please see log file"; return;} 
-     #process control file from inifile
-    open(AGN,">$props{'pending'}/$doc$suffix");
-    print(AGN $inifile{$doc});
-    close(AGN);
+  else
+    {#no documents found in file
+    &writelog("Processing of $file found no documents")
     }
   close myLOG;
   $livefile = $file;
@@ -596,9 +639,12 @@ sub processpdf
   if($trace == 0)
     {
     unlink("$file.txt");
-	@deletelist = &findfiles($burstdir,"");
-    unlink @deletelist;
-    rmdir $burstdir;
+    if($burstfile)
+   	  {
+	  @deletelist = &findfiles($burstdir,"");
+      unlink @deletelist;
+      rmdir $burstdir;
+      }
     opendir(SPOOL, ".");
     @deletelist = grep(/^$filePreFix/, readdir(SPOOL));
     closedir(SPOOL);
@@ -785,7 +831,7 @@ sub processdoc
       }
     else
       {
-      $error=$error . " Unknown dispostion not one of Email|Fax|Print";
+      $error=$error . " Unknown dispostion <($control{'disposition'}> not one of Email|Fax|Print";
       }
     }
     
@@ -991,8 +1037,7 @@ sub processfax
   #process receipt specification
   #add to email address in form person@company [YNSF]:executable
   ($receiptSpec,$receiptExec)=split(':',$control{'receipt'});
-  print "got <$receiptSpec>,<$receiptExec> from <$control{'receipt'}>\n";
-  if($receiptSpec =~ /[Yy][Ee][Ss]/)
+   if($receiptSpec =~ /[Yy][Ee][Ss]/)
     {
     $control{'email'} = $control{'email'} . " Y";
     }
