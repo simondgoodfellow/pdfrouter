@@ -4,11 +4,11 @@ if 0;
 
 #
 #	messagehub
-#	version 1.7.7
+#	version 1.7.8
 #	Copyright Trabazon Ltd. WN5 7XA, UK
 #
 #
-#	27 April 2012
+#	26 August 2015
 #
 #New
 #   1.7.8 allow : and = in fields for hub.ini
