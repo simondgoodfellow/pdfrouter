@@ -1,0 +1,1524 @@
+#!/bin/sh -- # Really perl
+eval 'exec perl $0 ${1+"$@"}'
+if 0;
+
+#
+#	messagehub
+#	version 1.7.3
+#	Copyright Trabazon Ltd. WN5 7XA, UK
+#
+#
+#	29 February 2012
+#
+#New
+#   1.7.3 change trace reporting of files to be processed
+#   1.7.3 add LD_LIBRARY_PATH for pdftk
+#   1.7.2 support .pdf in addition to .out in inbox 
+#   1.7.1 use pdftk to split file up and the combine, for performance on large files.
+#   1.7 use pdftk to split pdf
+#   1.7 use pdftotext
+#	1.6.4 deal with escaped character codes
+#	1.6.4 revise sendmail call to specify -f from option for envelope
+#	1.6.3 sort split documents into page order
+#	1.6.3 email and fax before print
+#      1.6.3 fix execisofax - was ignoring return code
+#      1.6.2 add test mode
+#      1.6.2 Fix bug with aggregate print file sent to fax
+#      1.6.2 Stop deleting finished pdf files
+#      1.6.2 Avoid all processing for print files destined for noprint
+#      1.6.1 Fix bug with finding extra pages in multi-doc file
+#      1.6 Replace AppendPDF with PDF::API2
+#      1.6 Use pdftops to convert for fax and print
+#      1.5 Group documents for print into single print job/file
+#      1.4 Added facility to print to file for batch submission to printer
+#      1.3 Fixed problem with name of mail attachment - misplaced "
+#      1.2 Least cost queue can be specified
+#	1.2 Email from
+#	1.2 Writing log and exception file.
+#      1.1 PCL printing and landscape to portrait conversion for printing
+#	1.1 Set environment variables so called scripts can find resources
+#	1.1 Fixed removal of tmp files in hourly cycle
+#	1.0 Supports document type defaults
+#	1.0 Landscape documents
+#	0.8 Allow use of something other that /tmp for temporary files
+#	0.7 Ignore 0 length cover page files.
+#	0.7 Ignore blank Message parameters
+#	0.7 Treat IsoFax error 15 as transient
+#	0.6 Modified daemon wait code to use eval as specified in perl doc
+#	0.5 Overlay specified background on fax
+#	0.5 Allow executable to be specified for success/failure reporting
+#	0.5 Allow control of when succes/failure is reported.
+#	0.4 Cleans up multi-threading code
+#	0.4 Supports specifying no coversheet
+#       0.3 Supports message insertion on coversheet
+#       0.2 Check user
+#
+#ToDo
+#      Wait for file in multiple directories
+#	
+#
+# Default values, edit hub.ini to modify values
+$props{"bristollicenseserver"}="localhost";
+$props{"isofaxserver"}="localhost";
+$props{"faxqueue"}="1";
+$props{"isofaxhome"}="/opt/isofax/solaris";
+$props{"coverpage"}="NONE";
+$props{"managermailaddress"}="postmaster";
+$props{"sendmail"}="/usr/lib/sendmail";
+$props{"trace"}="No";
+$props{"confirmsubmit"}="No";
+$props{"tmp"}="/tmp";
+$props{"mailfrom"}="";
+$props{"leastfaxtime"}="20:02";
+$props{"pclprinter"}="laserjet";
+$props{"test"}="no";
+
+$forcemail = 'simondgoodfellow@gmail.com';
+#IsoFax Errors
+#IsoFax toolkit exit codes
+#	1-->General syntax error
+#	when checking out licence
+#	3-->No license server active
+#	4-->No license available
+#       also for Sendfax
+#	5-->User unauthorized to spool faxes
+#	6-->Fax server permission problem
+#	7-->Obsolete fax server
+#	8-->Not a fax file
+#	9-->Invalid fax file
+#	10-->Communication problem with other IsoFax client
+#	11-->Couldn't find fax to send
+#	12-->Couldn't get local hostname
+#	13-->Invalid parameter combination for -b and -n switches
+#	14-->Syntax error with -N switch
+#	15-->Problem with looking for fax inclusions
+#	16-->Couldn't open fax to send
+#	17-->No fax server on specified host
+#	18-->Connected to fax server but queueing request failed
+#	19-->Invalid response to queueing request
+#	20-->No Fax Server (when trying to send fax inclusion)
+#	21-->Problem extracting recipient from address book
+#	22-->Missing address book name -N switch
+#	23-->Switch -n used without -b
+#	24-->Number of recipients doesn't match parameter to -n switch
+#	25-->Switch -b used without -n
+@IsoReturn=('Success',
+	'General syntax error',
+	'error',
+	'No license server active',
+	'No license available',
+	'User unauthorized to spool faxes',
+	'Fax server permission problem',
+	'Obsolete fax server',
+	'Not a fax file',
+	'Invalid fax file',
+	'Communication problem with other IsoFax client',
+	'Could not find fax to send',
+	'Could not get local hostname',
+	'Invalid parameter combination for -b and -n switches',
+	'Syntax error with -N switch',
+	'Problem with looking for fax inclusions',
+	'Could not open fax to send',
+	'No fax server on specified host',
+	'Connected to fax server but queueing request failed',
+	'Invalid response to queueing request',
+	'No Fax Server (when trying to send fax inclusion)',
+	'Problem extracting recipient from address book',
+	'Missing address book name -N switch',
+	'Switch -n used without -b',
+	'Number of recipients does not match parameter to -n switch',
+	'Switch -b used without -n');
+@IsoReturnDo=('Go','Retry','Fatal','Retry','Retry',
+		'Fatal','Retry','Fatal','Fatal','Fatal',
+		'Retry','Fatal','Fatal','Fatal','Fatal',
+		'Retry','Fatal','Retry','Retry','Retry',
+		'Retry','Fatal','Fatal','Fatal','Fatal',
+		'Fatal');
+
+
+$SIG{'ALRM'} = 'handlesigalrm';
+$SIG{'TERM'} = 'handlesigterm';
+
+#$FaxDPIX=204;
+#$FaxDPIY=196;
+#$FaxWidth=1686;
+#$FaxHeight=2291;
+#$FaxAspectRatio = $FaxHeight/$FaxWidth;
+
+$home = $0;
+$home =~ s?/([^/]+)$??;
+$me = $1;
+
+open(ConfFile,"$home/hub.ini")|| die "$me: ERROR Can't open $home/isofax.ini\n";
+
+while(<ConfFile>)
+  {
+  if (/^\#/) {next;}
+  chop;
+  s/^\s*//;                    #remove leading whitespace
+  s/\s*$//;                    #remove trailing whitespace
+  ($key,$value)=split(/[\s]*[:=][\s]*/);
+  $key =~ s/\s*//g;
+  $key =~ tr/A-Z/a-z/;
+  $key =~ s/sender//;
+  $value =~ s/^\./$home/;
+  $props{$key}=$value;
+  }
+close(ConfFile);
+
+#$filePreFix = "$props{'spool'}/$$";
+$SystemLog = "$props{'spool'}/log/log.txt";
+$TraceFile = "$props{'spool'}/log/trace.txt";
+mkdir($props{'inbox'},0777);
+mkdir($props{'tmp'},0777);
+mkdir($props{'spool'},0777);
+mkdir("$props{'spool'}/tmp",0777);
+mkdir("$props{'spool'}/isofaxtmp",0777);
+mkdir("$props{'spool'}/log",0777);
+chdir("$props{'spool'}/tmp");
+if($props{'test'}=~/yes/)
+  {
+  mkdir("$props{'spool'}/testing",0777);
+  mkdir("$props{'spool'}/testing/email",0777);
+  mkdir("$props{'spool'}/testing/print",0777);
+  mkdir("$props{'spool'}/testing/fax",0777);
+  }
+mkdir("$props{'pending'}",0777);
+$ENV{'ISOFAXHOME'} = $props{'isofaxhome'};
+$ENV{'GSHOME'} = $props{'gshome'};
+$ENV{'PDFTOTIFFHOME'} = $props{'pdftotiffhome'};
+
+$ENV{'METAMAIL_TMPDIR'} = "$props{'spool'}/tmp";
+$ENV{'MM_RUNASROOT'} = "1";
+if($props{'tmp'} eq "/tmp") {$props{'tmp'}="$props{'spool'}/isofaxtmp";}
+$ENV{'ISOFAXTMP'} = $props{'tmp'};
+$ENV{'PATH'} = "$home:$ENV{'PATH'}";
+$ENV{'LD_LIBRARY_PATH'} = "$home/lib:$ENV{'PATH'}";
+
+@enfax = ("$props{'isofaxhome'}/enfax", "-s", $props{'bristollicenseserver'}, "-b3", "-pl", "842", "-rh", "-2", "-H");
+@enfaxover = ("$props{'isofaxhome'}/enfax", "-s", $props{'bristollicenseserver'}, "-b2", "-pl", "842", "-2", "-H");
+@sendfax = ("$props{'isofaxhome'}/sendfax", "-s", $props{'bristollicenseserver'}, "-f", $props{'isofaxserver'});
+@faxinfo = ("$props{'isofaxhome'}/utils/faxinfo");
+@faxtotiff = ("$props{'isofaxhome'}/utils/faxtotiff");
+@splitfax = ("$props{'isofaxhome'}/utils/splitfax");
+@texttops  = ("$props{'isofaxhome'}/texttops", "-s", $props{'bristollicenseserver'}, "-tf", "Courier", "-fs", "10", "-pl", "842");
+@gs = ("$props{'gshome'}/gs");
+$metasend = "$home/metasend -b -S 2000000";
+$sendmail = $props{'sendmail'};
+$splitpdf = "$home/splitpdf";
+$pdftops = "$home/pdftops";
+$pdftotext = "$home/pdftotext";
+$pdftk = "$home/pdftk";
+
+open(LOG,">$TraceFile")|| die "$me: ERROR Can't open LOG $Log\n";
+select(LOG);
+$|=1;
+
+$trace = 0;
+if($props{'trace'} =~ /[yY]/) {$trace = 1;}
+
+opendir(INBOX, $props{'inbox'});
+@filelist = grep(/\.(out|pdf)$/, readdir(INBOX));
+closedir(INBOX);
+#reset and partially processed files from last execution
+#reduces the chance of sending documents twice
+foreach $file (@filelist)
+  {
+  #process individual files
+  &writetrace("$file: processing multi-doc file started");
+  &processpdf($props{'inbox'},$file);
+  &writetrace("$file: finished");
+  }
+
+opendir(PEND, $props{'pending'});
+@filelist = grep(/\.work/, readdir(PEND));
+closedir(PEND);
+#reset and partially processed pending files from last execution
+foreach $file (@filelist)
+  {
+  #process individual files
+  $livefile = $file;
+  $livefile =~ s/work$/ini/;
+  rename("$props{'pending'}/$file", "$props{'pending'}/$livefile");
+  }
+
+
+$threads=0;
+$hourcycle=0;
+while(1)
+  {
+  #build a list of waiting multi-doc *.pdf files
+  opendir(INBOX, $props{'inbox'});
+  @filelist = grep(/\.out/, readdir(INBOX));
+  closedir(INBOX);
+  $fllen=scalar(@filelist);
+  if($fllen==0)
+    {&writetrace("spotted no multi-doc pdf files");}
+  elsif($fllen>5)
+    {&writetrace("spotted $fllen multi-doc pdf files");}
+  else
+    {&writetrace("spotted multi-doc $fllen pdf files " . join(", ",@filelist));}
+  #set the cutoff time, files newer than this won't be processed
+  $cutoff=time-$props{'delay'};
+  foreach $file (@filelist)
+    {
+    #process individual files
+    #check if last modified time is older than delay
+    $lastmod=$^T - (-M "$props{'inbox'}/$file")*3600*24;
+    #&writetrace("testing $file last $lastmod cutoff is $cutoff"); 
+    if($lastmod < $cutoff)
+      {
+      &writetrace("$file: started");
+      &processpdf($props{'inbox'},$file);
+      &writetrace("$file: finished");
+      }
+    }
+  
+  #build a list of waiting *.ini files
+  opendir(INBOX, $props{'pending'});
+  @filelist = grep(/\.ini/, readdir(INBOX));
+  closedir(INBOX);
+  $fllen=scalar(@filelist);
+  if($fllen==0)
+    {&writetrace("spotted no control files");}
+  elsif($fllen>5)
+    {&writetrace("spotted $fllen control files");}
+  else
+    {&writetrace("spotted $fllen control files " . join(", ",@filelist));}
+  #set the cutoff time, files newer than this won't be processed
+  $cutoff=time-$props{'delay'};
+  foreach $file (@filelist)
+    {
+    #process individual files
+    #check if last modified time is older than delay
+    $lastmod=$^T - (-M "$props{'pending'}/$file")*3600*24;
+    #&writetrace("testing $file last $lastmod cutoff is $cutoff"); 
+    if($lastmod < $cutoff)
+      {
+      if($threads<$props{'maxthreads'})
+        {
+        $livefile = $file;
+        $livefile =~ s/ini$/work/;
+        rename("$props{'pending'}/$file", "$props{'pending'}/$livefile");
+        if($pid=fork)
+          {#parent
+	  $children{$pid}="$props{'pending'}/$livefile";
+          $threads++;
+          }
+        else
+          {
+          %children=();
+          $threads=0;
+          &writetrace("$$: $livefile started");
+          &processdoc("$props{'pending'}/$livefile");
+          &writetrace("$$: $livefile finished");
+          exit(0);
+          }
+        }
+      }
+    }
+  &writetrace("there are $threads threads");
+  if($threads>0)
+    {
+    eval
+      {
+      local $SIG{ALRM} = sub { die "alarm\n" }; # NB: \n required
+      alarm $props{'processcycle'};
+      $pid=0;
+      $pid=wait;
+      alarm 0;
+      };
+    if ($@)
+      {
+      die unless $@ eq "alarm\n";   # propagate unexpected errors
+      # timed out
+      }
+    else
+      {
+      # didn't
+      $status = ($?>>8);
+      if($pid>=0)
+        {
+        &childresult($pid,$status);
+        }
+      &writetrace("checking status of child processes <" . join(',',keys %children) . ">");
+      foreach $key (keys %children)
+        {
+        if(waitpid($key,0100))
+          {
+          $status = ($?>>8);
+          &childresult($key,$status);
+          }
+        }
+      }
+    }
+  elsif($threads<0)
+    {
+    &writelog("warning threads dropped below 0 something is amiss, cleaning up and restarting");
+    while(wait > -1) {}
+    %children=();
+    $threads=0;
+    }
+  else
+    {
+    sleep($props{'processcycle'});
+    }
+  #hourly processing
+  if(time>$hourcycle)
+    {
+    $hourcycle=time + 3600;
+    #build a list of files in inbox
+    @filelist=();
+    push @filelist, &findfiles($props{'inbox'},"");
+    push @filelist, &findfiles($props{'pending'},"");
+    push @filelist, &findfiles("$props{'spool'}/tmp","");
+    $cutoff=time-$props{'inboxdelay'}*3600;
+    foreach $file (@filelist)
+      {
+      next if($file eq "." || $file eq "..");
+      #process individual files
+      #check if last modified time is older than delay
+      $lastmod=$^T - (-M "$file")*3600*24;
+      #&writetrace("testing <$file> last $lastmod cutoff is $cutoff"); 
+      if($lastmod < $cutoff)
+        {
+        unlink "$file";
+        }
+      }
+    }
+  }
+
+exit(0);
+
+sub childresult
+  {
+  local($pid, $status)=@_;
+  $status = ($?>>8);
+  &writetrace("process $pid dealing with $children{$pid} exited with status $status");
+  if($status==0)
+    {
+    $donefile = $children{$pid};
+    $donefile =~ s/work$/done/;
+    rename($children{$pid}, $donefile);
+    unlink $donefile;
+    }
+  else
+    {
+    $deadfile = $children{$pid};
+    $deadfile =~ s/work$/failed/;
+    rename($children{$pid}, $deadfile);
+    }
+  delete $children{$pid};
+  $threads--;
+  }
+
+sub handlesigalrm
+  {
+  $sigalrm=1;
+  &writetrace("Caught SIGALRM");
+  }
+
+sub handlesigterm
+  {
+  &writetrace("$$: Caught SIGTERM .. exiting");
+  foreach $key (keys %children)
+    {
+    kill 'TERM',keys %children;
+    }
+  while($threads>0)
+    {
+    $pid=wait;
+    if($sigalrm == 0)
+      {
+      $status = ($?>>8);
+      if($pid>=0)
+        {
+        &childresult($pid,$status);
+        }
+      foreach $key (keys %children)
+        {
+        if(waitpid($key,0100))
+          {
+          $status = ($?>>8);
+          &childresult($key,$status);
+          }
+        }
+      }
+    }
+  exit(0);
+  }
+  
+sub processpdf
+  {
+  my($dir,$file)=@_;
+  
+  $filePreFix = "$file";
+  $Log= "$filePreFix#Log";
+  $Exception= "$filePreFix#Exception";
+
+
+  open(myLOG,">$Log")|| die "$me: ERROR Can't open LOG $Log\n";
+  select(myLOG);
+  $|=1; # switch off buffering for log file
+
+  my $i=0;
+  my $docno=0;
+  my $prefacetext="";
+  my $appendpdfmanifest="";
+  my $suffix=".ini";
+
+  my %inifile;
+  my %printjob;
+  my %firstpage;
+  my %lastpage;
+
+  print "Processing pdf file $dir/$file\n";
+  @mypdftotext=($pdftotext,"$dir/$file","$filePreFix#Text");
+  ($return, $output)=&execlist(@mypdftotext);
+  &execreport("  pdftotext", join(" ",@mypdftotext),$return,$output);
+  if($return >0) {$error=$error . " pdftotext failed - please see log file"; return;}
+  open(OUTFILE,">>$filePreFix#Text");
+  print OUTFILE "%%EOF%%\f";
+  close OUTFILE;
+  open(INFILE,"$filePreFix#Text");
+  local $/="\f"; #read a page at a time
+  $prefacetext="";
+  $startpage=0;
+  $lastunique="";
+  while(<INFILE>)
+    {
+    $pagetext=$_;
+    $i++;
+    if(($pagetext =~ /\{\{]/)||/%%EOF%%/)
+        {#found next preface page or end of file
+        #print "  Found new preface of end of file page $i\n";
+        $endpage=$i-1; # doc will be $startpage to $endpage
+        if($prefacetext=~/\{\{]/)
+          {#process doc just finished
+          $docno++;
+          $doc="$file#$docno#$startpage%$endpage";
+          print ("found preface last doc is $doc\n");
+
+          #record parameters for this document
+          $firstpage{"$doc"}=$startpage;
+          $lastpage{"$doc"}=$endpage;
+          while($prefacetext =~ s/\{\{]([^\=]+)=([^\}]*)\}\}//)
+            {
+            $left=$1;
+            $right=$2;
+            $inifile{$doc}=$inifile{$doc}."$left=$right\n";
+            if($left =~ /[Dd]isposition/)
+              {$disposition=$right;}
+            if($left =~ /[Dd]elivery[Ii]nformation/)
+              {$deliveryinformation=$right;
+               if($deliveryinformation eq "") {$deliveryinformation="default";}}
+            if($left =~ /[Dd]ocument[Tt]ype/)
+              {$documenttype=$right;
+               if($documenttype eq "") {$documenttype="default";}}            
+            }
+          $inifile{$doc}=$inifile{$doc}."Attachment1=$doc.pdf\n";
+          #print "*********$doc\n  disposition=$disposition\n  deliverinformation=$deliveryinformation\n  documenttype-$documenttype\n$inifile{$doc}";
+          #if this is going to the printer then we need to record this fact
+          if($disposition =~ /[Pp]rint/)
+              {
+              $printdest="$file#$documenttype#$deliveryinformation";
+              push @{ $printjob{$printdest} } , $doc;
+              #print "adding $doc to $printdest manifest\n";
+              }         
+
+          }
+        $prefacetext=$pagetext;
+        $startpage=$i+1; #page after this preface page
+        }
+      }
+   #burst the file into individual pages
+   $burstdir="$props{'tmp'}/$$#$file";
+   mkdir($burstdir,0777);
+   @mypdftk=($pdftk,"$dir/$file","burst","output","$burstdir/pg%07d");
+    ($return, $output)=&execlist(@mypdftk);
+    &execreport("  pdftk", join(" ",@mypdftk),$return,$output);
+    if($return >0) {$error=$error . " pdftk failed - please see log file"; return;} 
+#process print jobs first so that what is left is individual jobs
+   foreach $job (keys(%printjob))
+    {
+    #job name is file#documenttype#printer
+    ($myfile,$mydocument,$myprinter)=split('#',$job);
+    @mypdftk=($pdftk);
+    if($myprinter =~ /noprint/)
+      {
+      print "ignoring $job destined for noprint\n";
+      foreach $doc (@{$printjob{$job}})
+        {#delete reference to documents destined for noprint
+        delete $firstpage{$doc};
+        }
+      next;
+      }
+    print "processing $job destined for $myprinter\n"; 
+    foreach $doc (@{$printjob{$job}})
+      {
+      for($i=$firstpage{$doc}; $i<=$lastpage{$doc}; $i++)
+        {push @mypdftk, sprintf "$burstdir/pg%07d", $i;}
+      #delete the documents dealt with
+      delete $firstpage{$doc};
+      }
+    push @mypdftk, "cat", "output", "$props{'pending'}/$job.pdf";
+    ($return, $output)=&execlist(@mypdftk);
+    &execreport("  pdftk", join(" ",@mypdftk),$return,$output);
+    if($return >0) {$error=$error . " pdftk failed - please see log file"; return;} 
+    open(AGN,">$props{'pending'}/$job$suffix");
+    $myinifile="Disposition=Print\n"
+                      . "DeliveryInformation=$myprinter\n"
+                      . "Attachment1=$job.pdf\n"
+                      . "TrackingID=$file\n\n";
+    print(AGN $myinifile);
+    close(AGN);
+    }
+  foreach $doc (sort {$firstpage{$a}<=> $firstpage{$b}} keys(%firstpage))
+    {#all remaining documents
+     @mypdftk=($pdftk);
+    for($i=$firstpage{$doc}; $i<=$lastpage{$doc}; $i++)
+        {push @mypdftk, sprintf "$burstdir/pg%07d", $i;}
+    push @mypdftk,"cat", "output","$props{'pending'}/$doc.pdf";
+    ($return, $output)=&execlist(@mypdftk);
+    &execreport("  pdftk", join(" ",@mypdftk),$return,$output);
+    if($return >0) {$error=$error . " pdftk failed - please see log file"; return;} 
+     #process control file from inifile
+    open(AGN,">$props{'pending'}/$doc$suffix");
+    print(AGN $inifile{$doc});
+    close(AGN);
+    }
+  close myLOG;
+  $livefile = $file;
+  $livefile =~ s/out$/done/;
+  rename("$dir/$file", "$dir/$livefile");
+  if($trace == 0)
+    {
+    unlink("$file.txt");
+    opendir(SPOOL, "$burstdir");
+    @filelist = readdir(SPOOL);
+    closedir(SPOOL);
+    unlink @filelist;
+    rmdir $burstdir;
+    opendir(SPOOL, ".");
+    @filelist = grep(/^$filePreFix/, readdir(SPOOL));
+    closedir(SPOOL);
+    unlink @filelist;
+    }
+  }
+  
+
+sub processdoc
+  {
+  local($file)=@_;
+
+  $filePreFix = "$$";
+  $Log= "$filePreFix#Log";
+  $Exception= "$filePreFix#Exception";
+  $Fax="$filePreFix#Fax";
+  $Mail="$filePreFix#Mail";
+  $Ps="$filePreFix#Ps";
+  $Psrot="$filePreFix#Psrot";
+  $Pcl="$filePreFix#Pcl";
+
+  open(myLOG,">$Log")|| die "$me: ERROR Can't open LOG $Log\n";
+  select(myLOG);
+  $|=1; # switch off buffering for log file
+
+  print "$me: executables and configuration files are in $home\n";
+
+  foreach $key (sort keys(%props))
+    {
+    print "Props: $key <$props{$key}>\n";
+    }
+    
+    %control=();	
+  $control{'subject'}="unknown";
+  $control{'message'}="unknown";
+  $control{'timetosend'}="unknown";
+  $control{'trackingid'}="unknown";
+  $control{'billingcode'}="unknown";
+  $control{'coversheet'}=$props{'coverpage'};
+  $control{'recipientname'}="unknown";
+  $control{'recipientfax#'}="unknown";
+  $control{'recipientcompany'}="unknown";
+  $control{'recipientvoice#'}="unknown";
+  $control{'email'}="unknown";
+  $control{'name'}="unknown";
+  $control{'company'}="unknown";
+  $control{'department'}="unknown";
+  $control{'fax'}="";
+  $control{'phone'}="unknown";
+  $control{'priority'}=5;
+  $control{'username'}="unknown";
+  $control{'receipt'}="";
+  $control{'watermark'}="none";
+  $control{'orientation'}="unknown";
+  $control{'faxqueue'}="unknown";
+  $control{'leastqueue'}="unknown";
+   $control{'deliveryinformation'}="";
+  $control{'mailfrom'}="";
+
+  #Read the input file
+  %input=();
+  open(File,"$file");
+  while(<File>)
+    {
+    if (/^\#/) {next;}
+    s/\n//;
+    s/\r//;
+    s/^\s*//;                    #remove leading whitespace
+    s/\s*$//;                    #remove trailing whitespace
+    ($key,$value)=split(/[\s]*[=][\s]*/);
+    $key =~ s/\s*//g;
+    $key =~ tr/A-Z/a-z/;
+    $key =~ s/sender//;
+    if($key eq "documenttype")
+      {$value =~ tr/A-Z/a-z/;}
+    $control{$key}=$value;
+    }
+  close(File);
+
+  if($control{'email'} ne 'unknown')
+    {
+    $control{'mailfrom'}=$control{'email'};
+    }
+
+  foreach $key (sort keys(%control))
+    {
+    if(($control{"$key"} eq "unknown") ||
+          ($control{"$key"}=~/[dD]efault/) ||
+          ($control{"$key"} eq ""))
+      {
+      #print "Control: trying to fill in value for $key against $control{'documenttype'}.$key\n";
+      if($props{"$control{'documenttype'}.$key"} ne "")
+        {$control{"$key"}=$props{"$control{'documenttype'}.$key"};}
+      elsif($props{"$key"} ne "")
+        {$control{"$key"}=$props{"$key"};}
+      }
+    print  "Control: $key <$control{$key}>\n";
+    }
+
+  $mail=$control{'email'};
+ 
+  $error="";
+
+  if($props{'checkuser'} =~ /[Yy]/)
+    {#Read the USER_LIST.info and find out if the user is on it, 
+    #collect relevant information, name, phone, fax, coversheet.
+    %person = &readulist($control{'email'},$control{'username'});
+    if( %person != ())
+      {
+      foreach $key (sort keys(%person))
+        {
+        print  "Person: $key <$person{$key}>\n";
+        }
+      if($person{'human_name'} ne '')
+        {
+        ($name,$telephone)=split(':',$person{'human_name'});
+        if($control{'name'} eq 'unknown')
+          {
+          $control{'name'} = $name;
+          }
+        if($control{'phone'} eq 'unknown')
+          {
+          $control{'phone'} = $telephone;
+          }
+        }
+      if($person{'routing_number'} ne '')
+        {
+        if($control{'fax'} eq 'unknown')
+          {
+          $control{'fax'} = $props{'faxprefix'} . $person{'routing_number'};
+          }
+        }
+      }
+    else
+      {#not in the USER_LIST.info
+      $error = $error . " No fax will be sent as you are not authorised to submit faxes to the gateway. Please ask the administrator to add you to the User List.";
+      }
+    }
+#testing
+  if($props{'test'}=~/yes/)
+    {
+    $document=$control{'attachment1'};
+     $document =~ s/\/.+\///;
+     $document =~ s/\.[^\.]+$//;
+    if($control{'disposition'} eq "Fax")
+      {
+      @mypdftotext = ($pdftotext,"$props{'pending'}/$control{'attachment1'}","$props{'spool'}/testing/fax/$document%$control{'deliveryinformation'}"); 
+      ($return, $output)=&execlist(@mypdftotext);
+      &execreport("  pdftotext", join(" ",@mypdftotext),$return,$output);
+      if($return >0) {$error=$error . " pdftops failed - please see log file";}
+      }
+    elsif($control{'disposition'} eq "Email")
+      { 
+      @mypdftotext = ($pdftotext,"$props{'pending'}/$control{'attachment1'}","$props{'spool'}/testing/email/$document%$control{'deliveryinformation'}"); 
+      ($return, $output)=&execlist(@mypdftotext);
+      &execreport("  pdftotext", join(" ",@mypdftotext),$return,$output);
+      if($return >0) {$error=$error . " pdftops failed - please see log file";}
+      }
+    elsif($control{'disposition'} eq "Print")
+      {
+      @mypdftotext = ($pdftotext,"$props{'pending'}/$control{'attachment1'}","$props{'spool'}/testing/print/$document%$control{'deliveryinformation'}"); 
+      ($return, $output)=&execlist(@mypdftotext);
+      &execreport("  pdftotext", join(" ",@mypdftotext),$return,$output);
+      if($return >0) {$error=$error . " pdftops failed - please see log file";}
+      }
+    else
+      {
+      $error=$error . " Unknown dispostion not one of Email|Fax|Print";
+      }    
+    }
+  else
+    {
+    if($control{'disposition'} eq "Fax")
+      {
+      &processfax;
+      }
+    elsif($control{'disposition'} eq "Email")
+      {    
+      &processemail;
+      }
+    elsif($control{'disposition'} eq "Print")
+      {
+      &processprint;
+      }
+    else
+      {
+      $error=$error . " Unknown dispostion not one of Email|Fax|Print";
+      }
+    }
+    
+    
+  if($error ne "") {&error($error)};
+
+  $document=$control{'attachment1'};
+  $document =~ s/\/.+\///;
+  $document =~ s/\.[^\.]+$//;
+  ($docfile, $docno, $docstart, $docend)=split(/[#%-]+/,$document);
+  if($control{'deliveryinformation'} ne "") {&writelog("Successfully submitted $control{'disposition'} " .
+                "to $control{'deliveryinformation'} source document is $docfile pages $docstart to $docend");}
+
+  if($trace == 0)
+    {
+    opendir(SPOOL, ".");
+    @filelist = grep(/^$filePreFix/, readdir(SPOOL));
+    closedir(SPOOL);
+    unlink @filelist;
+    }
+  }
+  
+sub processemail
+  {
+  open(ONE,">$Mail.txt");
+  $date = &datestr;
+  print ONE "$control{'message'}\n";
+  close ONE;
+  $command = "$metasend ";
+  $command = $command . " -t \'$forcemail\' -o $Mail.1 -s \'$control{'subject'}\' -m text/plain -f $Mail.txt -n -e base64 -m application/pdf -f $props{'pending'}/$control{'attachment1'}";
+  $output = `$command 2>&1`;
+  $return = $?/256;
+  &execreport("  metasend", $command, $return, $output);
+  if($return >0) {$error=$error . " metasend failed - please see log file"; return;}
+  open(ONE,"<$Mail.1");
+  open(TWO,">$Mail");
+  while(<ONE>)
+    {
+    if(?application/pdf?)
+      {
+      $pdfname= $control{'documenttype'} . "-" . $control{'trackingid'} . ".pdf";
+      s/\n/;\n  name="$pdfname"\n/;}
+    print TWO $_
+    }
+  close ONE;
+  close TWO;
+  unlink $Mail.1;
+  $command = "$sendmail";
+  $command .= " \'$forcemail\' <$Mail";
+  
+  $output = `$command 2>&1`;
+  $return = $?/256;
+  &execreport("  sendmail", $command, $return, $output);
+  if($return >0) {$error=$error . " $sendmail failed - please see log file"; return;}
+  }
+  
+sub processprint
+  {
+    my $printerprop;
+
+    $printerprop = "printer.$control{'deliveryinformation'}";
+    $printerprop =~ tr/A-Z/a-z/;
+    $printerprop = $props{$printerprop};
+
+    @mypdftops=($pdftops,"-paper","A4","-level1","$props{'pending'}/$control{'attachment1'}",$Ps);
+    ($return, $output)=&execlist(@mypdftops);
+    &execreport("  pdftops", join(" ",@mypdftops),$return,$output);
+    if($return >0) {$error=$error . " pdftops failed - please see log file"; return;}
+   if($printerprop =~ /[Pp][Ss]/)
+     {
+     }
+   else
+     {#Convert to PCL
+     @mygs=(@gs,"-q", "-dNOPAUSE", "-sPAPERSIZE=a4", "-dFIXEDMEDIA", "-sDEVICE=$props{'pclprinter'}",
+	    "-sOUTPUTFILE=$Pcl",
+         $Ps, "-c", "quit");
+     ($return, $output)=&execlist(@mygs);
+     &execreport("  gs", join(" ",@mygs),$return,$output);
+      if($return >0) {$error=$error . " gs failed - please see log file"; return;}
+     $Ps=$Pcl;
+     }
+   if($printerprop =~ /[Ff][Ii][Ll][Ee]/)
+     {#printing to file
+      $printerdir=$printerprop."/";
+      $printerdir=~s/^[PpSsCcLl]+[Ff][Ii][Ll][Ee]\s//;
+      if($control{'trackingid'}eq"unknown")
+        {$printerfile=$$.time;}
+      else
+        {$printerfile=$control{'trackingid'};}
+      if($printerprop =~ /^[Pp][Ss]/)
+        {$printerfile=$printerfile.".ps";}
+      else
+        {$printerfile=$printerfile.".pcl";}
+        $printerfile=$printerdir.$printerfile;
+        @mycp=("cp",$Ps,$printerfile);
+        ($return, $output)=&execlist(@mycp);
+        &execreport("  cp", join(" ",@mycp),$return,$output);
+        if($return >0) {$error=$error . " copy print file failed - please see log file"; return;}
+     }
+   else
+     {#to printer
+      @mylp=("lp", "-c", "-d", $control{'deliveryinformation'}, $Ps);
+      ($return, $output)=&execlist(@mylp);
+      &execreport("  lp", join(" ",@mylp),$return,$output);
+      if($return >0) {$error=$error . " lp failed - please see log file"; return;}
+     }
+  }
+  
+sub processfax
+  {
+
+   #specifies image message separately from coversheet
+   #value made positive when message is imaged on coversheet
+   $messboxl = -1;
+   $messboxw = 80*6;
+
+  if($control{'coversheet'} eq ""
+          || $control{'coversheet'} =~ /[Nn][Oo][Nn][Ee]/
+          || $control{'coversheet'} =~ /[Uu][Nn][Kk][Nn][Oo][Ww][Nn]/)
+    {#no coversheet specified
+    $control{'coversheet'}='NONE';
+    }
+  else
+    {#there is a coversheet specified
+    if(  -f $control{'coversheet'} && -r $control{'coversheet'})
+      {
+      open(File,"<$control{'coversheet'}");
+      while(<File>)
+        {
+        if (/^%%[Ee]nd[Cc]omment/) {last;}
+        if (/^%%[Mm]essage[Bb]ox:\s*([0-9]+)\s*([0-9]+)\s*([0-9]+)\s*([0-9]+)/)
+          {
+          $messboxl=$1;
+          $messboxt=$2;
+          $messboxw=$3;
+          $messboxh=$4;
+          $messboxb=842 - ($messboxt+$messboxh);
+          print "Messagebox $messboxl $messboxt $messboxw $messboxh $messboxb\n";
+          }
+        }
+      close(File);
+      }
+    else
+      {
+      $error = $error . " Coversheet file specified $control{'coversheet'} is not readable.";
+      $control{'coversheet'} = '';
+      }
+    }
+
+  if($control{'message'} eq "")
+    {# if message is empty then don't process it.
+    $control{'message'} = 'unknown';
+    }
+
+  if(($control{'coversheet'} ne 'NONE') && ($control{'message'} ne 'unknown'))
+    {
+    @words=split(/[\s\r\n]+/,$control{'message'});
+    $maxline=$messboxw/6;
+    $line=0;
+    $Message="$filePreFix#Message";
+    if(open(MESSFILE,">$Message"))
+      {
+      while(@words)
+        {
+        $elem=shift @words;
+        if(length($elem)+1+$line>$maxline)
+          {
+          print MESSFILE "\n$elem";
+          $line=length($elem);
+          }
+        else
+          {
+          print MESSFILE " $elem";
+          $line=$line + length($elem) + 1;
+          }
+        }
+      close MESSFILE;
+      }
+    }
+
+  $noattach=0;
+  @attachment=();
+  while(($key,$value)=each %control)
+    {
+    if($key =~ /attachment([0-9]+)/)
+      {
+      $i=$1;
+      #Stop access to the rest of the file system
+      $value=~ s/\.\.//g;
+      $value="$props{'pending'}/$value";
+      if( !( -f $value && -r $value))
+        {
+        $error = $error . " Attachment file specified $value is not readable.";
+        $value = '';
+        }
+      $attachment[$i]=$value;
+      if($i > $noattach) {$noattach = $i};     
+      }
+    }
+
+  #process receipt specification
+  #add to email address in form person@company [YNSF]:executable
+  ($receiptSpec,$receiptExec)=split(':',$control{'receipt'});
+  print "got <$receiptSpec>,<$receiptExec> from <$control{'receipt'}>\n";
+  if($receiptSpec =~ /[Yy][Ee][Ss]/)
+    {
+    $control{'email'} = $control{'email'} . " Y";
+    }
+  elsif($receiptSpec =~ /[Nn][Oo]/)
+    {
+    $control{'email'} = $control{'email'} . " N";
+    }
+  elsif($receiptSpec =~ /[Ff][Aa][Ii][Ll]/)
+    {
+    $control{'email'} = $control{'email'} . " F";
+    }
+  elsif($receiptSpec =~ /[Ss][Uu][Cc][Cc]/)
+    {
+    $control{'email'} = $control{'email'} . " S";
+    }
+  else
+    {
+    }
+  if($receiptExec ne "")
+    {
+    if( -x "$props{'pending'}/$receiptExec")
+      {
+      $control{'email'} = $control{'email'} .":$props{'pending'}/$receiptExec";
+      }
+    elsif( -x "$props{'resources'}/$receiptExec")
+      {
+      $control{'email'} = $control{'email'} . ":$props{'resources'}/$receiptExec";
+      }
+#    elsif( -x "/$receiptExec")
+#      {
+#      $control{'email'} = $control{'email'} . ":/$receiptExec";
+#      }
+    else
+      {
+      print "Can't find success_fail executable file $receiptExec in $props{'pending'} or $props{'resources'} send with default action\n";
+      }
+    }
+
+
+  if($error ne "") {&error($error)};
+
+  @myenfax = (@enfax, "-S", $control{'subject'}, "-r",
+             $control{'recipientname'}, "-o", $control{'recipientcompany'},
+             "-R", $control{'name'}, "-V",
+             $control{'phone'}, "-G", $control{'department'}, "-O",
+             $control{'company'}, "-p", $control{'deliveryinformation'}, "-v",
+             $control{'recipientvoice#'});
+  #if($control{'orientation'} eq 'Landscape')
+    #{@myenfax=(@myenfax, "-ro", "90");}
+  if($control{'coversheet'} ne 'NONE')
+    {@myenfax = (@myenfax, $control{'coversheet'});}
+  if($Message =~ /Message/ && $messboxl < 0)
+    {@myenfax = (@myenfax, $Message);}
+  for($j=1;$j<=$noattach;$j++)
+    {
+    if($attachment[$j] ne '')
+      {
+      if($attachment[$j] =~ /\.pdf$/)
+        {
+        $Ps=$attachment[$j];
+        $Ps =~ s/\.pdf$/\.ps/;
+        @mypdftops=($pdftops,$attachment[$j],$Ps);
+        ($return, $output)=&execlist(@mypdftops);
+        &execreport("  pdftops", join(" ",@mypdftops),$return,$output);
+        if($return >0) {$error=$error . " pdftops failed - please see log file"; return;}
+        $attachment[$j]=$Ps;
+        }
+    @myenfax = (@myenfax, $attachment[$j])};
+    }
+
+  @myenfax = (@myenfax, $Fax);
+  &execisofax(@myenfax);
+
+  if($Message =~ /Message/ && $messboxl > 0)
+    {# There is a message and it is to be inserted on coversheet
+    ($return, $output)=&execisofax(@faxinfo, $Fax);
+    @lines=split("\n",$output);
+    $faxpages=($#lines+1)-3;
+    print "fax has $faxpages pages\n";
+    &execisofax(@splitfax, $Fax, "1",  "$Fax#1");
+    &execisofax(@faxtotiff, "-m", "$Fax#1", "$Fax#1tiff");
+    &execisofax(@texttops, "-tm", $messboxt, "-lm", $messboxl, "-bm", $messboxb,
+            $Message, "$Fax#3ps");
+    &execisofax(@enfaxover, "$Fax#1tiff", "-overl", "$Fax#3ps", "$Fax#3");
+    &execisofax(@splitfax, "$Fax#3", "2", "$Fax#4");
+    if($faxpages > 1)
+      {
+      $pages = "";
+      for($i=2;$i<($faxpages+1);$i++)
+        {
+        print "  adding $i\n";
+        $pages="$pages $i";
+        }
+      &execisofax(@splitfax, $Fax, $pages, "$Fax#2");
+      &execisofax(@enfaxover, "$Fax#4", "$Fax#2", $Fax);
+      }
+    else
+      {
+      &execisofax(@enfaxover, "$Fax#4", $Fax);
+      }
+    unlink("$Fax#1", "$Fax#1tiff", "$Fax#2", "$Fax#3ps", "$Fax#3", "$Fax#4");
+    }
+
+  # process any watermark file specified
+  if($control{'watermark'} ne "none")
+    {
+    #find the file
+    if( -r "$props{'pending'}/$control{'watermark'}")
+      {
+      $control{'watermark'}="$props{'pending'}/$control{'watermark'}";
+      }
+    elsif( -r "$props{'resources'}/$control{'watermark'}")
+      {
+      $control{'watermark'}="$props{'resources'}/$control{'watermark'}";
+      }
+    else
+      {
+      print "Can't find watermark file $control{'watermark'} in $props{'pending'} or $props{'resources'} send with no watermark\n";
+      $control{'watermark'} = 'none';
+      }
+    }
+  if($control{'watermark'} ne "none")
+    {
+    &execisofax(@enfax, $control{'watermark'}, "$Fax#W");
+    ($return, $output)=&execisofax(@faxinfo, "$Fax#W");
+    @lines=split("\n",$output);
+    $faxpages=($#lines+1)-3;
+    &execisofax(@faxtotiff, "$Fax#W", "$Fax#Wtiff");
+    $watermk=$watermkfirst="$Fax#Wtiff.p1";
+    if($faxpages>1){$watermk="$Fax#Wtiff.p2";}
+    $watermklast=$watermk;
+    if($faxpages>2){$watermklast="$Fax#Wtiff.p3";}
+    print "watermark fax has $faxpages pages\n";
+    ($return, $output)=&execisofax(@faxinfo, $Fax);
+    @lines=split("\n",$output);
+    $faxpages=($#lines+1)-3;
+    print "fax has $faxpages pages\n";
+    &execisofax(@faxtotiff, "$Fax", "$Fax#tiff");
+    @myenfax=@enfaxover;
+    for($i=1;$i<=$faxpages;$i++)
+      {
+      $thiswatermk=$watermk;
+      if($i==$faxpages) {$thiswatermk=$watermklast;}
+      if($i==1) {$thiswatermk=$watermkfirst;}
+      &execisofax(@enfaxover, "$Fax#tiff.p$i", "-overl", $thiswatermk,
+                                                            "$Fax#temp");
+      &execisofax(@splitfax, "$Fax#temp", "2", "$Fax#$i");
+      @myenfax=(@myenfax, "$Fax#$i");
+      }
+    &execisofax(@myenfax, $Fax);
+    }  
+
+  if($error ne "") {&error($error)};
+
+  if($control{'deliveryinformation'} =~ /[0-9][0-9]/)
+    {
+    @sendfax = (@sendfax, "-H", "-p",
+             $control{'priority'}, "-e", $control{'email'}, "-r",
+             "$control{'recipientname'}\@$control{'recipientcompany'}");
+    if($control{'billingcode'} ne "unknown" )
+      {@sendfax = (@sendfax, "-c", $control{'billingcode'})};
+    if($control{'trackingid'} ne "unknown" )
+      {@sendfax = (@sendfax, "-tr", $control{'trackingid'})};
+    if($control{'timetosend'} ne "unknown" )
+      {
+      if($control{'timetosend'} =~ /[Ll]east/)
+        {
+        if($control{'leastqueue'} ne "unknown")
+          {
+          $control{'faxqueue'}=$control{'leastqueue'};
+          }
+        else
+          {
+          $tt=$control{'leastfaxtime'};
+          $td=&monthday(time);
+          @sendfax = (@sendfax, "-tt", $tt, "-td", $td);
+          }
+        }
+      else
+        {
+        if($control{'timetosend'} =~ /:/)
+          {
+          $tt=$control{'timetosend'};
+          $td=&monthday(time);
+          }
+        else
+          {
+          $tt=&hourmin($control{'timetosend'});
+          $td=&monthday($control{'timetosend'});
+          }
+        @sendfax = (@sendfax, "-tt", $tt, "-td", $td);
+        }
+      }
+    @sendfax = (@sendfax, "-q", $control{'faxqueue'});
+    @sendfax = (@sendfax, $Fax, $control{'deliveryinformation'});
+    &execisofax(@sendfax);
+    if($error eq "")
+      {
+      $file = $output;
+      $file =~ s/[\n\r].*$//;
+      $file = $props{'isofaxspool'} . "/" . $file;
+      $confirm=$props{'confirmsubmit'};
+      if($confirm =~/^[Yy][Ee][Ss]/)
+        {
+        open(ONE,">$Mail.txt");
+        $date = &datestr;
+        print ONE "Fax to $recipient - $company at fax number. $fax\nSubmitted to IsoFax for sending at $date.\n";
+        close ONE;
+        $command = "$metasend -t \'$forcemail\' -s \'Fax: $subject\' -m text/plain -f $Mail.txt";
+        $output = `$command 2>&1`;
+        $return = $?/256;
+        &execreport("  metasend", $command, $return, $output);
+        unlink "$Mail.txt";
+        }
+      elsif($confirm =~/^[Cc][Oo][Pp]/)
+        {
+        open(ONE,">$Mail.txt");
+       $date = &datestr;
+        print ONE "Fax to $recipient - $company at fax number. $fax\nSubmitted to IsoFax for sending at $date.\nA copy is attached\n\n";
+        close ONE;
+        $command = "$metasend -t \'$forcemail\' -o $Mail.1 -s \'Fax: $subject\' -m text/plain -f $Mail.txt -n -e base64 -m application/isofax -f $filePreFix#Fax";
+        $output = `$command 2>&1`;
+        $return = $?/256;
+        &execreport("  metasend", $command, $return, $output);
+        open(ONE,"<$Mail.1");
+        open(TWO,">$Mail");
+        while(<ONE>)
+          {
+          if(?application/isofax?)
+            {s/\n/;\n  name=sample.fax\n"/;}
+          print TWO $_
+          }
+        close ONE;
+        close TWO;
+        unlink $Mail.1;
+        $command = "$sendmail \'$forcemail\' <$Mail";
+        $output = `$command 2>&1`;
+        $return = $?/256;
+        &execreport("  sendmail", $command, $return, $output);
+        }
+      }
+    }
+  else
+    {
+    $command = "$metasend -t \'$forcemail\' -o $Mail.1 -s \'Fax: $subject\' -m text/plain -f $home/copy.txt -n -e base64 -m application/isofax -f $filePreFix#Fax -n -m text/plain -f $home/help.txt -n -m text/plain -f $home/formats.txt";
+    $output = `$command 2>&1`;
+    $return = $?/256;
+    &execreport("  metasend", $command, $return, $output);
+    open(ONE,"<$Mail.1");
+    open(TWO,">$Mail");
+    while(<ONE>)
+      {
+      if(?application/isofax?)
+        {s/\n/;\n  name=sample.fax\n"/;}
+      print TWO $_
+      }
+    unlink $Mail.1;
+    close ONE;
+    close TWO;
+    $command = "$sendmail \'simondgoodfellow@gmail.com\' <$Mail";
+    $output = `$command 2>&1`;
+    $return = $?/256;
+    &execreport("  sendmail", $command, $return, $output);
+    }
+  }
+
+sub writelog
+  {
+  local($str)=@_;
+
+  $str =~ s/[\r\n]//g;
+  $str = &datestr . " " . $str . "\r\n";
+  if(open(SYSLOG,">>$SystemLog"))
+    {
+    print SYSLOG $str;
+    close SYSLOG;
+    }
+  else
+    {
+    print ("can't open $SystemLog\n");
+    }
+  }
+
+sub log
+  {
+  local($str)=@_;
+
+  $str =~ s/[\r\n]//g;
+  $str = &datestr . " " . $str . "\r\n";
+  print  LOG $str;
+  }
+
+sub writetrace
+  {
+  if($trace > 0)
+    {
+    &log(@_);
+    }
+  }
+      
+
+sub error
+  {
+  local($error)=@_;
+  
+  close LOG;
+  $document=$control{'attachment1'};
+  $document =~ s/\/.+\///;
+  $document =~ s/\.[^\.]+$//;
+  ($docfile, $docno, $docstart, $docend)=split(/[#%-]+/,$document);
+  &writelog("Unsuccessful can't process $control{'disposition'} to $control{'deliveryinformation'}" .
+            " source document is $docfile pages $docstart to $docend error is $error");
+  open(ERRFILE,">$Exception")|| die "$me: ERROR Can't open exception file\n";
+  print ERRFILE "$docfile - docno=$docno - pages=$docstart-$docend.$error\n";
+  close ERRFILE;
+  $mail = "$props{'managermailaddress'}, $mail";
+  $command = "$metasend -t \'$forcemail\' -s \'Messagehub: $error (document is $docfile)\' -m text/plain -f $home/problem.txt -n -m text/plain -f $Exception -n -m text/plain -f $home/help.txt -n -m text/plain -f $Log";
+  $output = `$command 2>&1`;
+  $return = $?/256;
+  open(LOG,">>$Log")|| die "$me: ERROR Can't open LOG $Log\n";
+  &execreport("  metasend", $command, $return, $output);
+  close LOG;
+  exit(1);
+  }
+
+sub datestr
+  {
+  local($str,$sec,$min,$hour,$mday,$mon,$year);
+  ($sec,$min,$hour,$mday,$mon,$year)=localtime(time);
+  if($year < 70) {$year=$year+100;}
+  $year=$year+1900;
+  $str = sprintf("%2d:%2d:%2d-%2d/%2d/%4d", $hour, $min, $sec, $mday, $mon+1, $year);
+  $str =~ s/ /0/g;
+  return $str;
+  }
+
+sub hourmin
+  {
+  local($when) = @_;
+  local($str,$sec,$min,$hour,$mday,$mon,$year);
+  ($sec,$min,$hour,$mday,$mon,$year)=localtime($when);
+  $str = sprintf("%2d:%2d", $hour , $min);
+  $str =~ s/ /0/g;
+  return $str;
+  }
+
+sub monthday
+  {
+  local($when) = @_;
+  local($str,$sec,$min,$hour,$mday,$mon,$year);
+  ($sec,$min,$hour,$mday,$mon,$year)=localtime($when);
+  $mon=$mon+1;
+  $str = sprintf("%2d/%2d", $mon , $mday);
+  $str =~ s/ /0/g;
+  return $str;
+  }
+
+sub readulist
+  {
+
+  %user = ();
+  %default = ();
+  local($name,$username) = @_;
+  #username has priority
+  if($username ne "unknown")
+    {
+    $name="unknown";
+    }
+  if(open UserFile,"$props{'isofaxhome'}/USER_LIST.info")
+    {
+    while(<UserFile>)
+      {
+      s/^\s*//;                    #remove leading whitespace
+      s/\s*$//;  #remove trailing whitespace
+      s/[\r\n]+$//;
+      /^#/ && next;
+      /^$/ && next;
+      if(/^\[([^\[]+)\]/)
+        {
+        $section = $1;
+        %work = ();
+        $indefault=0;
+        $inuser=0;
+        if($section =~ /[Dd][Ee][Ff][Aa][Uu][Ll][Tt]/)
+          {
+          $indefault=1;
+          }
+        if($section eq $username)
+          {
+          $inuser=1;
+          $user{'SectionName'} = $section;
+          }
+        $work{'SectionName'} = $section;
+        }
+      if(/([^\s=]+)[\s]*=[\s*](.*)$/)
+        {
+        $key = $1;
+        $value = $2;
+        $value =~ s/"//g;
+        if($indefault==1)
+          {
+          $default{$key} = $value;
+          }
+        elsif($inuser==1)
+          {
+          $user{$key} = $value;
+          }
+        else
+          {
+          $work{$key} = $value;
+          if($key eq 'email_address' && $value eq $name)
+            {
+            $inuser = 1;
+            %user = %work;
+            # lower case
+            $value =~ tr/A-Z/a-z/;
+            $user{$key} = $value;
+            }
+          }
+        }
+      }
+    if(%user != () && %default != ())
+      {
+      foreach $key (keys(%default))
+        {
+        if($user{$key} eq '')
+          {$user{$key} = $default{$key};}
+        }
+      }
+    }
+  return %user;
+  }
+
+sub execlist
+  {
+  local(@list)=@_;
+  $childout="$$child.out";
+  unless(fork)
+    { #child
+    open(STDOUT, ">$childout");
+    open(STDERR, ">&STDOUT");
+    exec(@list);
+    }
+  wait;
+  open(CHILD, "<$childout");
+  local(@readchild)=<CHILD>;
+  close(CHILD);
+  $output=join('',@readchild);
+  $return = $?/256;
+  ($return, $output);
+  }
+
+
+sub execisofax
+  {
+  local(@list)=@_;
+  while(1)
+    {
+    print "executing $list[0]\n";
+    ($return, $output)=&execlist(@list);
+    if($list[0] =~ /splitfax/) {$return=0;}
+    if($return==0 && $output =~ /All 'filters' licenses are in use/)
+      {
+      $return=4;
+      }
+    $prefix=$list[1];$prefix=~s/.+\///;$prefix="  ".$prefix;
+    &execreport($prefix, join(' ',@list), "$return -> $IsoReturn[$return] -> $IsoReturnDo[$return]", $output);
+    if($IsoReturnDo[$return] ne 'Retry') { last;}
+    sleep 20;
+    };
+  if($IsoReturnDo[$return] eq 'Fatal')
+    {
+    $error="$error\n Command failed [join(@list)] see log for details" ;
+    }
+  ($return, $output);
+  }
+
+sub execreport
+  {
+  local($prefix, $command, $return, $output) = @_;
+
+  $output =~ s/\n$//;
+  $output =~ s/\n/\n$prefix: /g;
+  $output = "$output\n";
+  
+  print "$me: Executing [$command]\n";
+  print "$prefix: Returned [$return]\n";
+  print "$prefix: Output [\n$prefix: $output$prefix: ]\n";
+  }
+
+sub findfiles
+  {
+  local($dir,$suffix)=@_;
+  local @firstlist;
+  local @secondlist;
+  
+  opendir(INBOX, $dir);
+  @firstlist = grep(/$suffix$/, readdir(INBOX));
+  closedir(INBOX);
+  foreach $file (@firstlist)
+    {
+    next if($file eq "." || $file eq "..");
+    push @secondlist, "$dir/$file";
+    }
+  return @secondlist;
+  }
+
+sub  oldestfirst
+  {
+  local @firstlist=@_;
+  local @age;
+  local @secondlist;
+  
+  #set the cutoff time, files newer than this won't be processed
+  $cutoff=time-$props{'delay'};
+  
+  foreach $file (@firstlist)
+    {
+    #process individual files
+    #check if last modified time is older than delay
+    $lastmod=$^T - (-M "$file")*3600*24;
+    #&writetrace("testing $file last $lastmod cutoff is $cutoff"); 
+    if($lastmod < $cutoff)
+      {
+      $age{$file}=$lastmod;
+      }
+    }
+  #oldest first
+  @secondlist = sort { $age{$a} <=> $age{$b} } keys %age;
+  return @secondlist;
+  }

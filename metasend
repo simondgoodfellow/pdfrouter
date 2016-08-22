@@ -1,0 +1,499 @@
+#!/bin/csh -fb
+# (The "-fb" might need to be changed to "-f" on some systems)
+#
+# Copyright (c) 1991 Bell Communications Research, Inc. (Bellcore)
+# 
+# Permission to use, copy, modify, and distribute this material 
+# for any purpose and without fee is hereby granted, provided 
+# that the above copyright notice and this permission notice 
+# appear in all copies, and that the name of Bellcore not be 
+# used in advertising or publicity pertaining to this 
+# material without the specific, prior written permission 
+# of an authorized representative of Bellcore.  BELLCORE 
+# MAKES NO REPRESENTATIONS ABOUT THE ACCURACY OR SUITABILITY 
+# OF THIS MATERIAL FOR ANY PURPOSE.  IT IS PROVIDED "AS IS", 
+# WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES.
+#
+
+if (! $?METAMAIL_TMPDIR) then
+    set METAMAIL_TMPDIR=/tmp
+endif
+
+set hname = `hostname`
+set idctr=0
+set MustDelete=0
+set batchmode=0
+set multipart = 1
+if ($?SPLITSIZE) then
+    set splitsize=$SPLITSIZE
+else
+    set splitsize = 100000
+endif
+set outputfile = ""
+set multipartsubtype = "mixed"
+set cdescrip = "An object packed by metasend"
+set isentity=0
+set newid=`date | tr " :" "__"`
+set cid="<${newid}_$idctr@${hname}>"
+@ idctr++
+
+while ($#argv > 0)
+    switch ("$1")
+        case "-S":
+            shift
+            if ($#argv == 0) then
+                echo "-S requires a following argument, the SPLIT threshhold"
+                exit -1
+            endif
+            set splitsize=$1
+            shift
+            breaksw
+        case "-b":
+            # Batch mode -- ALL args must be on command line
+            set batchmode = 1
+            shift
+            breaksw
+        case "-c":
+            shift
+            if ($#argv == 0) then
+                echo "-c requires a following argument, the CC address"
+                exit -1
+            endif
+            set cc="$1"
+            shift
+            breaksw
+        case "-i":
+            shift
+            if ($#argv == 0) then
+                echo "-i requires a following argument, the Content-ID value"
+                exit -1
+            endif
+            set cid=$1
+            shift
+            breaksw
+        case "-I":
+            shift
+            if ($#argv == 0) then
+                echo "-I requires a following argument, the multipart Content-ID value"
+                exit -1
+            endif
+            set multicid=$1
+            shift
+            breaksw
+        case "-s":
+            shift
+            if ($#argv == 0) then
+                echo "-s requires a following argument, the SUBJECT"
+                exit -1
+            endif
+            set subject="$1"
+            shift
+            breaksw
+        case "-t":
+            shift
+            if ($#argv == 0) then
+                echo "-t requires a following argument, the TO address"
+                exit -1
+            endif
+            set to="$1"
+            shift
+            breaksw
+        case "-F":
+            shift
+            if ($#argv == 0) then
+                echo "-F requires a following argument, the FROM address"
+                exit -1
+            endif
+            set from="$1"
+            shift
+            breaksw
+        case "-P":
+            shift
+            if ($#argv == 0) then
+                echo "-P requires a following argument, the preamble file name"
+                exit -1
+            endif
+            set preamblefile="$1"
+            shift
+            breaksw
+        case "-e":
+            shift
+            if ($#argv == 0) then
+                echo "-e requires a following argument, the ENCODING value"
+                exit -1
+            endif
+            set encode=$1
+            if ($encode == "base64") then
+	    set encodingprog = "mimencode -b"
+            else if ($encode == "x-uue") then
+	        set encodingprog = "uuencode mail-body"
+            else if ($encode == "7bit") then
+	        set encodingprog = cat
+           else
+	        set encodingprog = "mimencode -q"
+	        set encode = "quoted-printable"
+           endif 
+           shift
+            breaksw
+        case "-f":
+            shift
+            if ($#argv == 0) then
+                echo "-f requires a following argument, the DATA FILE"
+                exit -1
+            endif
+            set datafile=$1
+            if (! -e  $datafile) then
+                echo The file $datafile does not exist.
+                exit -1
+            endif
+            shift
+            breaksw
+        case "-m":
+            shift
+            if ($#argv == 0) then
+                echo "-m requires a following argument, the MIME CONTENT-TYPE"
+                exit -1
+            endif
+#            set ctyperaw = $1
+#            set  ctype=`echo $ctyperaw | tr \" \'`
+	set ctype = "$1"
+	if (`echo $ctype | grep /` == "") then
+	    echo "Invalid content-type specified"
+	    exit -1
+	endif
+            shift
+            breaksw
+        case "-o":
+            shift
+            if ($#argv == 0) then
+                echo "-o requires a following argument, the output file name"
+                exit -1
+            endif
+            set outputfile="$1"
+            shift
+            breaksw
+        case "-/":
+            shift
+            if ($#argv == 0) then
+                echo "-/ requires a following argument, the multipart subtype"
+                exit -1
+            endif
+            set multipartsubtype="$1"
+            shift
+            breaksw
+        case "-D":
+            shift
+            if ($#argv == 0) then
+                echo "-D requires a following argument, the Content-Description value"
+                exit -1
+            endif
+            set cdescrip="$1"
+            shift
+            breaksw
+        case "-E":
+            set isentity=1
+            shift
+            breaksw
+        case "-z":
+            set MustDelete=1
+            shift
+            breaksw
+        case "-n":
+            if ($isentity) then
+              if (! $?encode) then 
+                set encode=7bit
+                set encodingprog=cat
+              endif
+              if (! $?ctype) then
+                  set ctype=bogus
+                  # Never used
+               endif
+	if ( ! $?datafile) then
+	    echo One part is incomplete -- each part needs at least -f and -E
+	    exit -1
+	endif
+            else 
+	if ( ! $?ctype || ! $?datafile) then
+	    echo One part is incomplete -- each part needs at least -f and -m
+	    exit -1
+	endif
+            endif
+	if (! $?encode) then
+	        if ("$ctype" =~ text*) then
+	              set encodingprog = "mimencode -q"
+		set encode = "quoted-printable"
+	        else
+	            set encode = base64
+	            set encodingprog = "mimencode -b"
+	        endif
+	endif
+	set ctype${multipart} = "$ctype"
+	set datafile${multipart} = $datafile
+	set encode${multipart} = $encode
+	set cdescrip${multipart} = "$cdescrip"
+	set cid${multipart} = "$cid"
+	set isentity${multipart} = $isentity
+	set encodingprog${multipart} = "$encodingprog"
+	unset ctype
+	unset datafile
+	unset encode
+	unset encodingprog
+	set newid=`date | tr " :" "__"`
+	set cid="<${newid}_$idctr@${hname}>"
+	@ idctr++
+	set cdescrip = "An object packed by metasend"
+	set isentity=0
+            @  multipart++
+	shift
+	breaksw
+        default:
+            echo UNRECOGNIZED METASEND OPTION: $1
+            exit -1
+    endsw
+end
+if ($batchmode == 0) then
+    if (! $?to) then
+        echo -n "To: "
+        set to = $<
+    endif
+    if (! $?subject) then
+        echo -n "Subject: "
+        set subject = $<
+    endif
+    if (! $?cc) then
+        echo -n "CC: "
+        set cc = $<
+    endif
+anotherpart:
+    if (! $?ctype) then
+        echo -n "Content-type: "
+#        set ctyperaw = $<
+#        set  ctype=`echo $ctyperaw | tr \" \'`
+        set ctype = "$<"
+    endif
+    if (`echo $ctype | grep /` == "") then
+        echo "Invalid content-type specified"
+        unset ctype
+        goto anotherpart
+    endif
+#    if ($ctype != $ctyperaw)  echo Double  quotes not allowed, using $ctype
+    if (! $?datafile) then
+        getfile:
+        echo -n "Name of file containing $ctype data: "
+        set datafile = $<
+        if (! -e  $datafile) then
+            echo The file $datafile does not exist.
+            goto getfile
+        endif
+    endif
+    if (! $?encode) then
+        retry:
+        echo "Do you want to encode this data for sending through the mail?"
+        echo "  1 -- No, it is already in 7 bit ASCII"
+        echo "  2 -- Yes, encode in base64 (most efficient)"
+        echo "  3 -- Yes, encode in quoted-printable (less efficient, more readable)"
+        echo "  4 -- Yes, encode it using uuencode (not standard, being phased out)"
+        set encode=$<
+        switch ("$encode")
+            case 1:
+                set encodingprog = cat
+	  set encode = 7bit
+                breaksw
+            case 2:
+                set encodingprog = "mimencode -b"
+	  set encode = base64
+                breaksw
+            case 3:
+                set encodingprog = "mimencode -q"
+	  set encode = quoted-printable
+                breaksw
+            case 4:
+                set encodingprog = "uuencode $datafile"
+	  set encode = x-uue
+                breaksw
+            default:
+                echo Unrecognized answer, please try again.
+                goto retry
+        endsw
+    endif
+    echo -n "Do you want to include another file too (y/n) [n] ? "
+    set ans=$<
+    if  ("$ans" =~ y*) then
+	set ctype${multipart} = "$ctype"
+	set datafile${multipart} = $datafile
+	set encode${multipart} = $encode
+	set encodingprog${multipart} = "$encodingprog"
+	set cdescrip${multipart} = "$cdescrip"
+	set cid${multipart} = "$cid"
+	set isentity${multipart} = $isentity
+	set cdescrip = "An object packed by metasend"
+	set isentity=0
+	unset ctype
+	unset datafile
+	unset encode
+	unset encodingprog
+	set newid=`date | tr " :" "__"`
+	set cid="<${newid}_$idctr@${hname}>"
+	@ idctr++
+            @  multipart++
+            goto anotherpart
+     endif
+else
+    if ($outputfile == "") then
+      if (! $?to || ! $?subject || ! $?ctype || ! $?datafile) then
+        echo metasend: in batch mode, if output is not directed to a file,-t, -s, -f, and -m are all required
+        exit -1
+      endif
+    else
+      if (! $?datafile) then
+        echo metasend:  in batch mode, -f is required.
+      endif
+      if ($isentity) then
+        if (! $?ctype) then
+          set ctype=bogus
+          # will not be used anyway really
+        endif
+      endif
+      if (! $?ctype  ) then
+        echo metasend: in batch mode, with output directed to a file, -E or -m is required
+        exit -1
+      endif
+    endif    
+    if (! -e  $datafile) then
+        echo metasend:  The file $datafile does not exist
+        exit -1
+    endif
+#    if (! $?cc) set cc=""
+#     if ($ctype != $ctyperaw)  echo Double  quotes not allowed, using $ctype
+    if (! $?encode) then
+        if ("$ctype" =~ text*) then
+	set encodingprog = "mimencode -q"
+	set encode = "quoted-printable"
+        else
+            set encodingprog = "mimencode -b"
+            set encode = base64
+        endif
+    else if ($encode == "base64") then
+        set encodingprog = "mimencode -b"
+    else if ($encode == "x-uue") then
+        set encodingprog = "uuencode mail-body"
+    else if ($encode == "7bit") then
+        set encodingprog = cat
+    else
+        set encodingprog = "mimencode -q"
+        set encode = "quoted-printable"
+    endif
+endif
+
+if (! $?encode) then
+        if ("$ctype" =~ text*) then
+	set encode = "quoted-printable"
+	set encodingprog = "mimencode -q"
+        else
+            set encode = base64
+            set encodingprog = "mimencode -b"
+        endif
+endif
+set ctype${multipart} = "$ctype"
+set datafile${multipart} = $datafile
+set encode${multipart} = $encode
+set cdescrip${multipart} = "$cdescrip"
+set cid${multipart} = "$cid"
+set isentity${multipart} = $isentity
+set encodingprog${multipart} = "$encodingprog"
+
+set fname = ${METAMAIL_TMPDIR}/metasend.$$
+echo "MIME-Version: 1.0" > $fname
+if ($?to) then
+    echo "To: " "$to" >> $fname
+endif
+if ($?subject) then
+    echo "Subject: " "$subject" >> $fname
+endif
+if ($?cc) then
+    echo "CC: " "$cc" >> $fname
+endif
+if ($?from) then
+    echo "From: " "$from" >> $fname
+endif
+if ($multipart > 1) then
+    set  boundary = ${hname}.$$.`date | tr "  " .`
+    set newid=`date | tr " :" "__"`
+    if ($?multicid) then
+        echo "Content-ID: $multicid"   >> $fname
+    else
+        echo "Content-ID: <${newid}_$idctr@${hname}>"   >> $fname
+        @ idctr++
+    endif
+    echo "Content-type: multipart/$multipartsubtype;" >> $fname
+    echo "	boundary="\"$boundary\" >> $fname
+    echo "" >> $fname
+    if ($?preamblefile) then
+        cat $preamblefile >> $fname
+    else
+        echo "This is  a multimedia message in MIME  format.  If you are reading this" >> $fname
+        echo "prefix, your mail reader does  not understand MIME.  You may wish" >> $fname
+        echo "to look into upgrading to a newer version of  your mail reader." >> $fname
+    endif
+    set i=1
+    set junkfile=${METAMAIL_TMPDIR}/mmjunk.$$
+    while  ($multipart >= $i)
+	echo "" >> $fname
+	echo --$boundary >> $fname
+	echo set isentity=\$isentity$i > $junkfile
+	source $junkfile
+	if (! $isentity) then
+	    echo -n "Content-ID: "   >> $fname
+	    echo echo \$cid$i \>\>  $fname > $junkfile
+	    source $junkfile 
+	    echo -n "Content-type: ">>$fname
+	    echo echo \$ctype$i \>\>  $fname > $junkfile
+	    source $junkfile 
+	    echo -n "Content-Description: ">>$fname
+	    echo echo \"\$cdescrip$i \" \>\>  $fname > $junkfile
+	    source $junkfile 
+	    echo -n "Content-Transfer-Encoding: " >>$fname
+	    echo echo \$encode$i \>\> $fname > $junkfile
+	    source $junkfile 
+	    echo ""  >> $fname
+	endif
+	echo \$encodingprog$i \< \$datafile$i \>\> $fname > $junkfile
+	source $junkfile 
+	@ i++
+    end
+    rm $junkfile
+    echo "" >> $fname
+    echo --${boundary}-- >> $fname
+    echo "" >> $fname
+else 
+    if (! $isentity) then
+        echo "Content-ID: $cid"   >> $fname
+        echo "Content-type: " $ctype >> $fname
+        echo "Content-Description: " $cdescrip >> $fname
+        echo "Content-Transfer-Encoding: " $encode >> $fname
+    endif
+    echo  "" >> $fname
+    $encodingprog < $datafile >> $fname
+    # Ensure last line has trailing carriage return
+    echo "" >> $fname
+endif
+if ($outputfile == "") then
+    if ($batchmode == 0) echo -n "Delivering mail, please wait...  "
+    splitmail -s $splitsize -d $fname
+    if (! $status) then
+        if ($batchmode == 0) echo "Mail delivery apparently succeeded."
+        rm $fname
+    else if ($MustDelete == 1) then
+        echo Mail delivery failed
+        rm $fname
+        exit -1
+    else
+        echo Mail delivery failed, draft mail is in $fname
+        exit -1
+    endif
+else
+    mv $fname $outputfile
+    if ($status) exit -1
+endif
+exit 0
+

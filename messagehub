@@ -4,13 +4,14 @@ if 0;
 
 #
 #	messagehub
-#	version 1.7.8
+#	version 1.7.9
 #	Copyright Trabazon Ltd. WN5 7XA, UK
 #
 #
-#	26 August 2015
+#	22 August 2016
 #
 #New
+#   1.7.9 allow ' in email addresses
 #   1.7.8 allow : and = in fields for hub.ini
 #   1.7.7 added check of # documents found in input file
 #   1.7.7 option for pdftk to burst or not to burst
@@ -862,7 +863,7 @@ sub processemail
   print ONE "$control{'message'}\n";
   close ONE;
   $command = "$metasend ";
-  $command = $command . " -t \'$control{'deliveryinformation'}\' -o $Mail.1 -s \'$control{'subject'}\' -m text/plain -f $Mail.txt -n -e base64 -m application/pdf -f $props{'pending'}/$control{'attachment1'}";
+  $command = $command . " -t \"$control{'deliveryinformation'}\" -o $Mail.1 -s \'$control{'subject'}\' -m text/plain -f $Mail.txt -n -e base64 -m application/pdf -f $props{'pending'}/$control{'attachment1'}";
   $output = `$command 2>&1`;
   $return = $?/256;
   &execreport("  metasend", $command, $return, $output);
@@ -882,8 +883,8 @@ sub processemail
   unlink $Mail.1;
   $command = "$sendmail";
   if($control{'mailfrom'} ne "")
-    {$command=$command . " -f \'$control{'mailfrom'}\' ";}
-  $command .= " $control{'deliveryinformation'} <$Mail";
+    {$command=$command . " -f \"$control{'mailfrom'}\" ";}
+  $command .= " \"$control{'deliveryinformation'}\" <$Mail";
   
   $output = `$command 2>&1`;
   $return = $?/256;
@@ -1247,7 +1248,7 @@ sub processfax
         $date = &datestr;
         print ONE "Fax to $recipient - $company at fax number. $fax\nSubmitted to IsoFax for sending at $date.\n";
         close ONE;
-        $command = "$metasend -t \'$mail\' -s \'Fax: $subject\' -m text/plain -f $Mail.txt";
+        $command = "$metasend -t \"$mail\" -s \'Fax: $subject\' -m text/plain -f $Mail.txt";
         $output = `$command 2>&1`;
         $return = $?/256;
         &execreport("  metasend", $command, $return, $output);
@@ -1259,7 +1260,7 @@ sub processfax
        $date = &datestr;
         print ONE "Fax to $recipient - $company at fax number. $fax\nSubmitted to IsoFax for sending at $date.\nA copy is attached\n\n";
         close ONE;
-        $command = "$metasend -t \'$mail\' -o $Mail.1 -s \'Fax: $subject\' -m text/plain -f $Mail.txt -n -e base64 -m application/isofax -f $filePreFix#Fax";
+        $command = "$metasend -t \"$mail\" -o $Mail.1 -s \'Fax: $subject\' -m text/plain -f $Mail.txt -n -e base64 -m application/isofax -f $filePreFix#Fax";
         $output = `$command 2>&1`;
         $return = $?/256;
         &execreport("  metasend", $command, $return, $output);
@@ -1274,7 +1275,7 @@ sub processfax
         close ONE;
         close TWO;
         unlink $Mail.1;
-        $command = "$sendmail $mail <$Mail";
+        $command = "$sendmail \"$mail\" <$Mail";
         $output = `$command 2>&1`;
         $return = $?/256;
         &execreport("  sendmail", $command, $return, $output);
@@ -1283,7 +1284,7 @@ sub processfax
     }
   else
     {
-    $command = "$metasend -t \'$mail\' -o $Mail.1 -s \'Fax: $subject\' -m text/plain -f $home/copy.txt -n -e base64 -m application/isofax -f $filePreFix#Fax -n -m text/plain -f $home/help.txt -n -m text/plain -f $home/formats.txt";
+    $command = "$metasend -t \"$mail\" -o $Mail.1 -s \'Fax: $subject\' -m text/plain -f $home/copy.txt -n -e base64 -m application/isofax -f $filePreFix#Fax -n -m text/plain -f $home/help.txt -n -m text/plain -f $home/formats.txt";
     $output = `$command 2>&1`;
     $return = $?/256;
     &execreport("  metasend", $command, $return, $output);
@@ -1298,7 +1299,7 @@ sub processfax
     unlink $Mail.1;
     close ONE;
     close TWO;
-    $command = "$sendmail $mail <$Mail";
+    $command = "$sendmail \"$mail\" <$Mail";
     $output = `$command 2>&1`;
     $return = $?/256;
     &execreport("  sendmail", $command, $return, $output);
@@ -1355,7 +1356,7 @@ sub error
   print ERRFILE "$docfile - docno=$docno - pages=$docstart-$docend.$error\n";
   close ERRFILE;
   $mail = "$props{'managermailaddress'}, $mail";
-  $command = "$metasend -t \'$control{'email'}\' -s \'Messagehub: $error (document is $docfile)\' -m text/plain -f $home/problem.txt -n -m text/plain -f $Exception -n -m text/plain -f $home/help.txt -n -m text/plain -f $Log";
+  $command = "$metasend -t \"$control{'email'}\" -s \'Messagehub: $error (document is $docfile)\' -m text/plain -f $home/problem.txt -n -m text/plain -f $Exception -n -m text/plain -f $home/help.txt -n -m text/plain -f $Log";
   $output = `$command 2>&1`;
   $return = $?/256;
   open(LOG,">>$Log")|| die "$me: ERROR Can't open LOG $Log\n";
